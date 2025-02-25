@@ -21,6 +21,7 @@
    */
 
   import { onMount } from 'svelte';
+  import * as tf from '@tensorflow/tfjs';
   import './app.css';
 
   /**
@@ -130,45 +131,7 @@
   const checkCollision = (car, obstacle) =>
     Math.hypot(car.x - obstacle.x, car.y - obstacle.y) < GAME_CONFIG.COLLISION_RADIUS;
 
-  /**
-   * Game Loop ****************************************************************
-   */
-  const update = (timestamp) => {
-    if (gameOver || isPaused) return;
 
-    const deltaTime = timestamp - lastFrameTime;
-    lastFrameTime = timestamp;
-    elapsedTime = Date.now() - gameStartTime;
-    roadDashOffset -= speed * (deltaTime / 16);
-
-    // Update obstacles
-    obstacles = obstacles.filter(obs => {
-      obs.y += speed * (deltaTime / 16);
-      const relevantCar = cars[obs.side];
-
-      if (checkCollision(relevantCar, obs)) {
-        if (obs.type === 'square') {
-          updateBestScore();
-          gameOver = true;
-          return true;
-        }
-        score++;
-        return false;
-      }
-
-      if (obs.y >= gameHeight) {
-        if (obs.type === 'circle') {
-          updateBestScore();
-          gameOver = true;
-        }
-        return false;
-      }
-      return true;
-    });
-
-    spawnObstacle();
-    if (!gameOver) requestAnimationFrame(update);
-  };
 
   /**
    * Game State Management ****************************************************
@@ -180,13 +143,6 @@
     }
   };
 
-  const togglePause = () => {
-    isPaused = !isPaused;
-    if (!isPaused) {
-      lastFrameTime = performance.now();
-      requestAnimationFrame(update);
-    }
-  };
 
   const restartGame = () => {
     score = 0;
@@ -204,28 +160,254 @@
     requestAnimationFrame(update);
   };
 
-  /**
-   * Initialization ***********************************************************
-   */
-  onMount(() => {
+
+  // RL Functions
+  function getState() {
+    const leftCarLane = cars.left.lane === 'left' ? 0 : 1;
+    const rightCarLane = cars.right.lane === 'left' ? 0 : 1;
+    const carY = cars.left.y;
+
+    function getNextObstacles(side, lane, M) {
+      const laneX = lane === 'left' ? LANE_POSITIONS[side].start : LANE_POSITIONS[side].alt;
+      const obsInLane = obstacles.filter(obs => obs.side === side && Math.abs(obs.x - laneX) < 1);
+      const aboveObs = obsInLane.filter(obs => obs.y < carY).sort((a, b) => b.y - a.y);
+      const nextM = aboveObs.slice(0, M);
+      const statePart = [];
+      for (let i = 0; i < M; i++) {
+        if (i < nextM.length) {
+          statePart.push(nextM[i].y);
+          statePart.push(nextM[i].type === 'circle' ? 1 : 0);
+        } else {
+          statePart.push(-100);
+          statePart.push(-1);
+        }
+      }
+
+      return statePart;
+    }
+
+    const M = 2;
+    const leftLeftObs = getNextObstacles('left', 'left', M);
+    const leftRightObs = getNextObstacles('left', 'right', M);
+    const rightLeftObs = getNextObstacles('right', 'left', M);
+    const rightRightObs = getNextObstacles('right', 'right', M);
+
+    return [leftCarLane, rightCarLane, ...leftLeftObs, ...leftRightObs, ...rightLeftObs, ...rightRightObs];
+  }
+
+
+  function setLanesFromAction(action) {
+    const laneConfigs = [
+      ['left', 'left'],
+      ['left', 'right'],
+      ['right', 'left'],
+      ['right', 'right']
+    ];
+    const [leftLane, rightLane] = laneConfigs[action];
+    cars.left.lane = leftLane;
+    cars.right.lane = rightLane;
+  }
+
+  class DQNAgent {
+  constructor() {
+    this.model = createModel();
+    this.replayBuffer = [];
+    this.epsilon = 1.0;
+    this.epsilonMin = 0.01;
+    this.epsilonDecay = 0.995;
+    this.gamma = 0.99;
+    this.batchSize = 32;
+    this.maxBufferSize = 10000;
+  }
+
+  async act(state) {
+    if (Math.random() < this.epsilon) {
+      return Math.floor(Math.random() * 4);
+    }
+    const stateTensor = tf.tensor2d([state]);
+    const qValues = this.model.predict(stateTensor);
+    const action = qValues.argMax(1).dataSync()[0];
+    stateTensor.dispose();
+    qValues.dispose();
+    return action;
+  }
+
+  async remember(state, action, reward, nextState, done) {
+    this.replayBuffer.push([state, action, reward, nextState, done]);
+    if (this.replayBuffer.length > this.maxBufferSize) {
+      this.replayBuffer.shift();
+    }
+  }
+
+  async replay() {
+    if (this.replayBuffer.length < this.batchSize) return;
+    const batch = this.sample(this.replayBuffer, this.batchSize);
+    const states = batch.map(b => b[0]);
+    const actions = batch.map(b => b[1]);
+    const rewards = batch.map(b => b[2]);
+    const nextStates = batch.map(b => b[3]);
+    const dones = batch.map(b => b[4]);
+
+    const stateTensors = tf.tensor2d(states);
+    const nextStateTensors = tf.tensor2d(nextStates);
+    const qValues = this.model.predict(stateTensors);
+    const nextQValues = this.model.predict(nextStateTensors);
+
+    const targets = qValues.arraySync();
+    const nextQMax = nextQValues.max(1).dataSync();
+    for (let i = 0; i < batch.length; i++) {
+      const target = dones[i] ? rewards[i] : rewards[i] + this.gamma * nextQMax[i];
+      targets[i][actions[i]] = target;
+    }
+
+    await this.model.fit(stateTensors, tf.tensor2d(targets), { epochs: 1, verbose: 0 });
+    stateTensors.dispose();
+    nextStateTensors.dispose();
+    qValues.dispose();
+    nextQValues.dispose();
+
+    if (this.epsilon > this.epsilonMin) {
+      this.epsilon *= this.epsilonDecay;
+    }
+  }
+
+  sample(array, size) {
+    const shuffled = array.slice().sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, size);
+  }
+}
+
+
+function createModel() {
+  const model = tf.sequential();
+  model.add(tf.layers.dense({ units: 64, activation: 'relu', inputShape: [18] }));
+  model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
+  model.add(tf.layers.dense({ units: 4, activation: 'linear' }));
+  model.compile({ optimizer: 'adam', loss: 'meanSquaredError' });
+  return model;
+}
+
+  let agent;
+  onMount(async () => {
+    agent = new DQNAgent();
+    console.log('Agent:', agent);
     const updateHeight = () => {
       if (gameContainer) {
         gameHeight = window.innerHeight;
         gameContainer.style.height = `${gameHeight}px`;
       }
     };
-
     updateHeight();
     window.addEventListener('resize', updateHeight);
     window.addEventListener('keydown', handleKeydown);
-    requestAnimationFrame(update);
-
+    requestAnimationFrame(async (timestamp) => await update(timestamp));
     return () => {
       window.removeEventListener('resize', updateHeight);
       window.removeEventListener('keydown', handleKeydown);
       gameOver = true;
     };
   });
+
+  let totalRewards = 0;
+  let reward = 0;
+  let previousAction = null;
+  const update = async (timestamp) => {
+    if (gameOver || isPaused) return;
+
+    const deltaTime = timestamp - lastFrameTime;
+    lastFrameTime = timestamp;
+    elapsedTime = Date.now() - gameStartTime;
+    roadDashOffset -= speed * (deltaTime / 16);
+
+    let done = false;
+
+    if (!gameOver && !isPaused && agent) {
+      const state = getState();
+      const action = await agent.act(state);
+
+      const currentLanes = [
+        cars.left.lane === 'left' ? 0 : 1,
+        cars.right.lane === 'left' ? 0 : 1
+      ];
+      setLanesFromAction(action); // get small penalty for changing lanes
+      const newLanes = [
+        cars.left.lane === 'left' ? 0 : 1,
+        cars.right.lane === 'left' ? 0 : 1
+      ];
+
+
+      // Determine if a lane switch occurred
+      let switchPenalty = 0;
+      if (previousAction !== null) {
+        const prevLanes = [
+          previousAction < 2 ? 0 : 1, // Left car: 0 or 1 based on action 0/1 vs 2/3
+          previousAction % 2 === 0 ? 0 : 1 // Right car: 0 or 1 based on action 0/2 vs 1/3
+        ];
+        if (currentLanes[0] !== prevLanes[0] || currentLanes[1] !== prevLanes[1]) {
+          const leftCar = cars.left;
+          const rightCar = cars.right;
+          const leftObstacles = obstacles.filter(obs => obs.side === 'left' && obs.y > leftCar.y - 100 && obs.y < leftCar.y);
+          const rightObstacles = obstacles.filter(obs => obs.side === 'right' && obs.y > rightCar.y - 100 && obs.y < rightCar.y);
+          const hasBenefit = leftObstacles.some(obs => obs.type === 'circle' && checkCollision(leftCar, obs)) ||
+                             rightObstacles.some(obs => obs.type === 'circle' && checkCollision(rightCar, obs)) ||
+                             leftObstacles.some(obs => obs.type === 'square' && !checkCollision(leftCar, obs)) ||
+                             rightObstacles.some(obs => obs.type === 'square' && !checkCollision(rightCar, obs));
+          switchPenalty = hasBenefit ? -0.1 : -1.0; // Smaller penalty if beneficial, larger otherwise
+        }
+      }
+
+      obstacles = obstacles.filter(obs => {
+        obs.y += speed * (deltaTime / 16);
+        const relevantCar = cars[obs.side];
+        if (checkCollision(relevantCar, obs)) {
+          if (obs.type === 'square') {
+            reward -= 10;
+            done = true;
+            return true;
+          } else {
+            score++;
+            reward += 2;
+            return false;
+          }
+        }
+        if (obs.y >= gameHeight) {
+          if (obs.type === 'circle') {
+            reward -= 10;
+            done = true;
+          }
+          return false;
+        }
+        return true;
+      });
+
+      reward += 0.01; // Survival reward
+      reward += switchPenalty;
+
+      const nextState = getState();
+      await agent.remember(state, action, reward, nextState, done);
+      await agent.replay();
+
+      if (done) {
+        gameOver = true;
+        totalRewards += reward;
+        console.log(`Episode Reward: ${reward} - Total Reward: ${totalRewards}`);
+        reward = 0; // Reset for next episode
+        updateBestScore();
+        setTimeout(restartGame, 1000); // Restart after 1 second for automated training
+      }
+    }
+
+    spawnObstacle();
+    if (!gameOver) requestAnimationFrame(async (timestamp) => await update(timestamp));
+  };
+
+  const togglePause = () => {
+    isPaused = !isPaused;
+    if (!isPaused) {
+      lastFrameTime = performance.now();
+      requestAnimationFrame(async (timestamp) => await update(timestamp));
+    }
+  };
 </script>
 
 <!-- Game Container & Controls ******************************************** -->
