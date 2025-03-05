@@ -218,8 +218,12 @@
     updateHeight();
     window.addEventListener('resize', updateHeight);
     window.addEventListener('keydown', handleKeydown);
-    requestAnimationFrame(update);
 
+    // Expose functions to window for Playwright access
+    window.getState = getState;
+    window.setLanesFromAction = setLanesFromAction;
+
+    requestAnimationFrame(async (timestamp) => await update(timestamp));
     return () => {
       window.removeEventListener('resize', updateHeight);
       window.removeEventListener('keydown', handleKeydown);
@@ -318,14 +322,14 @@
   </svg>
 
   <!-- Touch Controls ***************************************************** -->
-  <div class="absolute touch-left"
+  <div class="absolute touch-left left-paddle"
     on:touchstart={toggleCarLane('left')}
     on:mousedown={toggleCarLane('left')}
     role="button"
     tabindex="0"
     aria-label="Control left car"
   ></div>
-  <div class="absolute touch-right"
+  <div class="absolute touch-right right-paddle"
     on:touchstart={toggleCarLane('right')}
     on:mousedown={toggleCarLane('right')}
     role="button"
