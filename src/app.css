@@ -106,22 +106,6 @@ body {
 
 
 /**
- * Animation classes **********************************************************
- */
-.car, g {
-  transition: transform 0.2s ease-out;
-}
-
-.car {
-  transition: x 0.2s ease-out, cx 0.2s ease-out, transform 0.2s ease-out;
-}
-
-g {
-  transform-origin: center;
-}
-
-
-/**
  * Touch controls *************************************************************
  */
 .touch-left, .touch-right {
