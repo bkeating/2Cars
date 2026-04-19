@@ -1,7 +1,28 @@
 <script>
+  /**
+   * Game Architecture Overview **********************************************
+   *
+   * Dual-lane endless runner in Svelte: two cars (left/right screen halves),
+   * tap or keys to switch lanes. Obstacles spawn from the top; collect circles,
+   * avoid squares. Score rises with pickups; game ends on square hit or missed
+   * circle.
+   *
+   * The main loop uses requestAnimationFrame. Lane flips set a target x (tx);
+   * each frame the car x eases toward tx so collision uses the same position as
+   * the SVG (avoids CSS-only motion drifting from logic). Squares use AABB vs
+   * AABB; circles use circle vs axis-aligned car bounds.
+   *
+   * Spawn rate scales with speed and viewport height (taller viewports get a
+   * modest bump so difficulty stays fair). Reactive statements keep lane pixel
+   * positions in sync when width/height change.
+   */
+
   import { onMount } from 'svelte';
   import './app.css';
 
+  /**
+   * Configuration ************************************************************
+   */
   const GAME_CONFIG = {
     MAX_WIDTH: 380,
     CAR_OFFSET_Y: 140,
@@ -19,6 +40,9 @@
     RIGHT_COLOR: '#05aac1'
   };
 
+  /**
+   * Game State ***************************************************************
+   */
   let score = 0;
   let bestScore = parseInt(localStorage.getItem('bestScore')) || 0;
   let gameOver = false;
@@ -29,6 +53,9 @@
   let roadDashOffset = 0;
   let gameHeight, gameWidth, gameContainer;
 
+  /**
+   * Reactive Calculations ****************************************************
+   */
   $: speed = Math.min(22, 3 + score * 0.062 + elapsedTime / 14000);
   $: speedDisplay = speed.toFixed(1);
   $: gameWidth = gameContainer ? Math.min(GAME_CONFIG.MAX_WIDTH, gameContainer.clientWidth) : GAME_CONFIG.MAX_WIDTH;
@@ -38,6 +65,9 @@
     right: { start: gameWidth * 0.625, alt: gameWidth * 0.88 }
   };
 
+  /**
+   * Game Objects *************************************************************
+   */
   let cars = {
     left: { lane: 'left', y: 0, x: 0, tx: 0 },
     right: { lane: 'left', y: 0, x: 0, tx: 0 }
@@ -45,6 +75,7 @@
   let obstacles = [];
   let nextObsId = 0;
 
+  // Lane targets (tx) and vertical position from layout; x lerps in update().
   $: if (gameHeight) {
     for (const side of ['left', 'right']) {
       const c = cars[side];
@@ -53,6 +84,9 @@
     }
   }
 
+  /**
+   * Game Controls ************************************************************
+   */
   const toggleCarLane = (side) => (event) => {
     event?.preventDefault();
     if (!isPaused && !gameOver) {
@@ -69,6 +103,9 @@
     controls[event.key]?.();
   };
 
+  /**
+   * Obstacle Management ******************************************************
+   */
   const spawnObstacle = () => {
     if (obstacles.some(obs => obs.y < GAME_CONFIG.MIN_VERTICAL_SPACING)) return;
 
@@ -91,6 +128,9 @@
     obstacles = [...obstacles, { id: nextObsId++, x, y: -22, type, side }];
   };
 
+  /**
+   * Collision (car center cx,cy vs obstacle center ox,oy) **********************
+   */
   const hitCircle = (cx, cy, ox, oy) => {
     const L = cx - GAME_CONFIG.CAR_HW,
       T = cy - GAME_CONFIG.CAR_HH,
@@ -108,6 +148,9 @@
     Math.abs(cx - ox) < GAME_CONFIG.CAR_HW + GAME_CONFIG.SQUARE_HW &&
     Math.abs(cy - oy) < GAME_CONFIG.CAR_HH + GAME_CONFIG.SQUARE_HW;
 
+  /**
+   * Game Loop ****************************************************************
+   */
   const update = (timestamp) => {
     if (gameOver || isPaused) return;
 
@@ -151,6 +194,9 @@
     if (!gameOver) requestAnimationFrame(update);
   };
 
+  /**
+   * Game State Management ****************************************************
+   */
   const updateBestScore = () => {
     if (score > bestScore) {
       bestScore = score;
@@ -185,6 +231,9 @@
     requestAnimationFrame(update);
   };
 
+  /**
+   * Initialization ***********************************************************
+   */
   onMount(() => {
     const updateHeight = () => {
       if (gameContainer) {

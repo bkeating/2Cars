@@ -106,6 +106,13 @@ body {
 
 
 /**
+ * Car motion *****************************************************************
+ * Horizontal easing runs in the game loop (lerp toward target lane), not CSS,
+ * so collision uses the same x as the SVG. No transition on .car here.
+ */
+
+
+/**
  * Touch controls *************************************************************
  */
 .touch-left, .touch-right {
