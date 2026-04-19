@@ -29,12 +29,16 @@
   const GAME_CONFIG = {
     MAX_WIDTH: 380,
     CAR_OFFSET_Y: 140,
-    MIN_VERTICAL_SPACING: 100,
-    SIDE_MIN_SPACING: 150,
-    CROSS_SIDE_SPACING: 80,
-    BASE_SPAWN_CHANCE: 0.02,
-    SPEED_MULTIPLIER: 0.004,
-    COLLISION_RADIUS: 30,
+    MIN_VERTICAL_SPACING: 92,
+    SIDE_MIN_SPACING: 138,
+    CROSS_SIDE_SPACING: 72,
+    BASE_SPAWN_CHANCE: 0.026,
+    SPEED_MULTIPLIER: 0.0052,
+    REF_H: 560,
+    CAR_HW: 15,
+    CAR_HH: 25,
+    CIRCLE_R: 15,
+    SQUARE_HW: 15,
     LEFT_COLOR: '#f23a63',
     RIGHT_COLOR: '#05aac1'
   };
@@ -55,7 +59,7 @@
   /**
    * Reactive Calculations ****************************************************
    */
-  $: speed = Math.min(15, 3 + (score * 0.05) + (elapsedTime / 20000));
+  $: speed = Math.min(22, 3 + score * 0.062 + elapsedTime / 14000);
   $: speedDisplay = speed.toFixed(1);
   $: gameWidth = gameContainer ? Math.min(GAME_CONFIG.MAX_WIDTH, gameContainer.clientWidth) : GAME_CONFIG.MAX_WIDTH;
 
@@ -68,18 +72,18 @@
    * Game Objects *************************************************************
    */
   let cars = {
-    left: { lane: 'left', y: 0, x: 0 },
-    right: { lane: 'left', y: 0, x: 0 }
+    left: { lane: 'left', y: 0, x: 0, tx: 0 },
+    right: { lane: 'left', y: 0, x: 0, tx: 0 }
   };
   let obstacles = [];
+  let nextObsId = 0;
 
-  // Update car positions
-  $: {
-    if (gameHeight) {
-      ['left', 'right'].forEach(side => {
-        cars[side].x = cars[side].lane === 'left' ? LANE_POSITIONS[side].start : LANE_POSITIONS[side].alt;
-        cars[side].y = gameHeight - GAME_CONFIG.CAR_OFFSET_Y;
-      });
+  // Lane targets (tx) and vertical position from layout; x lerps in update().
+  $: if (gameHeight) {
+    for (const side of ['left', 'right']) {
+      const c = cars[side];
+      c.tx = c.lane === 'left' ? LANE_POSITIONS[side].start : LANE_POSITIONS[side].alt;
+      c.y = gameHeight - GAME_CONFIG.CAR_OFFSET_Y;
     }
   }
 
@@ -108,7 +112,7 @@
   const spawnObstacle = () => {
     if (obstacles.some(obs => obs.y < GAME_CONFIG.MIN_VERTICAL_SPACING)) return;
 
-    const spawnChance = GAME_CONFIG.BASE_SPAWN_CHANCE + (speed - 3) * GAME_CONFIG.SPEED_MULTIPLIER;
+    let spawnChance = (GAME_CONFIG.BASE_SPAWN_CHANCE + (speed - 3) * GAME_CONFIG.SPEED_MULTIPLIER) * Math.min(1.38, 0.82 + gameHeight / GAME_CONFIG.REF_H * 0.45);
     if (Math.random() > spawnChance) return;
 
     const side = Math.random() < 0.5 ? 'left' : 'right';
@@ -124,11 +128,28 @@
     const lane = Math.random() < 0.5 ? 'left' : 'right';
     const x = lane === 'left' ? LANE_POSITIONS[side].start : LANE_POSITIONS[side].alt;
 
-    obstacles = [...obstacles, { x, y: -20, type, side }];
+    obstacles = [...obstacles, { id: nextObsId++, x, y: -22, type, side }];
   };
 
-  const checkCollision = (car, obstacle) =>
-    Math.hypot(car.x - obstacle.x, car.y - obstacle.y) < GAME_CONFIG.COLLISION_RADIUS;
+  /**
+   * Collision (car center cx,cy vs obstacle center ox,oy) **********************
+   */
+  const hitCircle = (cx, cy, ox, oy) => {
+    const L = cx - GAME_CONFIG.CAR_HW,
+      T = cy - GAME_CONFIG.CAR_HH,
+      R = cx + GAME_CONFIG.CAR_HW,
+      B = cy + GAME_CONFIG.CAR_HH;
+    const nx = ox < L ? L : ox > R ? R : ox;
+    const ny = oy < T ? T : oy > B ? B : oy;
+    const dx = ox - nx,
+      dy = oy - ny,
+      r = GAME_CONFIG.CIRCLE_R;
+    return dx * dx + dy * dy < r * r;
+  };
+
+  const hitSquare = (cx, cy, ox, oy) =>
+    Math.abs(cx - ox) < GAME_CONFIG.CAR_HW + GAME_CONFIG.SQUARE_HW &&
+    Math.abs(cy - oy) < GAME_CONFIG.CAR_HH + GAME_CONFIG.SQUARE_HW;
 
   /**
    * Game Loop ****************************************************************
@@ -138,15 +159,21 @@
 
     const deltaTime = timestamp - lastFrameTime;
     lastFrameTime = timestamp;
+    const dt = deltaTime / 16;
+    const laneBlend = 1 - Math.exp(-deltaTime / 165);
     elapsedTime = Date.now() - gameStartTime;
-    roadDashOffset -= speed * (deltaTime / 16);
+    roadDashOffset -= speed * dt;
 
-    // Update obstacles
+    for (const side of ['left', 'right']) {
+      const c = cars[side];
+      c.x += (c.tx - c.x) * laneBlend;
+    }
+
     obstacles = obstacles.filter(obs => {
-      obs.y += speed * (deltaTime / 16);
-      const relevantCar = cars[obs.side];
+      obs.y += speed * dt;
+      const c = cars[obs.side];
 
-      if (checkCollision(relevantCar, obs)) {
+      if (obs.type === 'square' ? hitSquare(c.x, c.y, obs.x, obs.y) : hitCircle(c.x, c.y, obs.x, obs.y)) {
         if (obs.type === 'square') {
           updateBestScore();
           gameOver = true;
@@ -192,14 +219,17 @@
     score = 0;
     gameOver = false;
     obstacles = [];
+    nextObsId = 0;
     gameStartTime = Date.now();
     elapsedTime = 0;
     roadDashOffset = 0;
     isPaused = false;
-    cars = {
-      left: { lane: 'left', y: gameHeight - GAME_CONFIG.CAR_OFFSET_Y, x: 0 },
-      right: { lane: 'left', y: gameHeight - GAME_CONFIG.CAR_OFFSET_Y, x: 0 }
-    };
+    cars = { left: { lane: 'left', y: 0, x: 0, tx: 0 }, right: { lane: 'left', y: 0, x: 0, tx: 0 } };
+    for (const side of ['left', 'right']) {
+      const t = cars[side].lane === 'left' ? LANE_POSITIONS[side].start : LANE_POSITIONS[side].alt;
+      cars[side].y = gameHeight - GAME_CONFIG.CAR_OFFSET_Y;
+      cars[side].tx = cars[side].x = t;
+    }
     lastFrameTime = performance.now();
     requestAnimationFrame(update);
   };
@@ -212,6 +242,12 @@
       if (gameContainer) {
         gameHeight = window.innerHeight;
         gameContainer.style.height = `${gameHeight}px`;
+        for (const side of ['left', 'right']) {
+          const c = cars[side];
+          c.tx = c.lane === 'left' ? LANE_POSITIONS[side].start : LANE_POSITIONS[side].alt;
+          c.y = gameHeight - GAME_CONFIG.CAR_OFFSET_Y;
+          c.x = c.tx;
+        }
       }
     };
 
@@ -257,7 +293,7 @@
 
   <!-- Game Canvas ******************************************************** -->
   <svg width={gameWidth} height={gameHeight}>
-    {#each ['left', 'right'] as side}
+    {#each ['left', 'right'] as side (side)}
       <!-- Lanes -->
       <rect
         x={side === 'left' ? 0 : gameWidth/2}
@@ -304,7 +340,7 @@
     {/each}
 
     <!-- Obstacles -->
-    {#each obstacles as obstacle}
+    {#each obstacles as obstacle (obstacle.id)}
       <g>
         {#if obstacle.type === 'circle'}
           <circle cx={obstacle.x} cy={obstacle.y} r="15" fill={obstacle.side === 'left' ? GAME_CONFIG.LEFT_COLOR : GAME_CONFIG.RIGHT_COLOR} />

@@ -106,19 +106,10 @@ body {
 
 
 /**
- * Animation classes **********************************************************
+ * Car motion *****************************************************************
+ * Horizontal easing runs in the game loop (lerp toward target lane), not CSS,
+ * so collision uses the same x as the SVG. No transition on .car here.
  */
-.car, g {
-  transition: transform 0.2s ease-out;
-}
-
-.car {
-  transition: x 0.2s ease-out, cx 0.2s ease-out, transform 0.2s ease-out;
-}
-
-g {
-  transform-origin: center;
-}
 
 
 /**
