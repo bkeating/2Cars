@@ -26,3 +26,7 @@ dist-ssr
 *.sw?
 **/dist/*
 ._*
+
+# Keep models directory but ignore its contents
+models/*
+!models/.gitkeep
