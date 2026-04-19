@@ -2,19 +2,22 @@
   /**
    * Game Architecture Overview **********************************************
    *
-   * Dual-lane endless runner in Svelte: two cars (left/right screen halves),
-   * tap or keys to switch lanes. Obstacles spawn from the top; collect circles,
-   * avoid squares. Score rises with pickups; game ends on square hit or missed
-   * circle.
+   * This is a dual-lane endless runner game built in Svelte where a player
+   * controls two cars simultaneously. Core mechanics:
    *
-   * The main loop uses requestAnimationFrame. Lane flips set a target x (tx);
-   * each frame the car x eases toward tx so collision uses the same position as
-   * the SVG (avoids CSS-only motion drifting from logic). Squares use AABB vs
-   * AABB; circles use circle vs axis-aligned car bounds.
+   * - Each side (left/right) has two lanes the car can switch between
+   * - Obstacles spawn from the top and move downward at increasing speed
+   * - Players tap/click left/right side of screen to control respective cars
+   * - Score increases based on circles collected, time survived and speed
+   * - Game ends if either car collides with an obstacle or misses a circle
    *
-   * Spawn rate scales with speed and viewport height (taller viewports get a
-   * modest bump so difficulty stays fair). Reactive statements keep lane pixel
-   * positions in sync when width/height change.
+   * The game uses requestAnimationFrame for smooth animation and updates obstacle
+   * positions each frame based on elapsed time and current speed. Collision
+   * detection uses simple radius-based checking between cars and obstacles.
+   *
+   * State management is handled through Svelte's reactive declarations, with the
+   * main game loop updating positions and spawning obstacles based on probability
+   * that increases with score/time.
    */
 
   import { onMount } from 'svelte';
